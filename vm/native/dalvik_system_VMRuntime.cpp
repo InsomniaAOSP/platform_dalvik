@@ -21,6 +21,7 @@
 #include "ScopedPthreadMutexLock.h"
 #include "native/InternalNativePriv.h"
 
+#include <cutils/array.h>
 #include <limits.h>
 
 
@@ -52,6 +53,38 @@ static void Dalvik_dalvik_system_VMRuntime_nativeSetTargetHeapUtilization(
     dvmSetTargetHeapUtilization(dvmU4ToFloat(args[1]));
 
     RETURN_VOID();
+}
+
+/*
+ * native void nativeSetTargetHeapMinFree()
+ *
+ * Sets the current MIN_FREE, represented as a number
+ * for byte size.  Returns the old MIN_FREE.
+ *
+ * Note that this is NOT static.
+ */
+static void Dalvik_dalvik_system_VMRuntime_nativeSetTargetHeapMinFree(
+    const u4* args, JValue* pResult)
+{
+    dvmSetTargetHeapMinFree(args[1]);
+
+    RETURN_INT(dvmGetTargetHeapMinFree());
+}
+
+/*
+ * native void nativeSetTargetHeapConcurrentStart()
+ *
+ * Sets the current concurrentStart, represented as a number
+ * for byte size.  Returns the old concurrentStart.
+ *
+ * Note that this is NOT static.
+ */
+static void Dalvik_dalvik_system_VMRuntime_nativeSetTargetHeapConcurrentStart(
+    const u4* args, JValue* pResult)
+{
+    dvmSetTargetHeapConcurrentStart(args[1]);
+
+    RETURN_INT(dvmGetTargetHeapConcurrentStart());
 }
 
 /*
@@ -192,13 +225,9 @@ static void Dalvik_dalvik_system_VMRuntime_setTargetSdkVersion(const u4* args,
     // Note that this value may be 0, meaning "current".
     int targetSdkVersion = args[1];
     if (targetSdkVersion > 0 && targetSdkVersion <= 13 /* honeycomb-mr2 */) {
-        if (gDvmJni.useCheckJni) {
-            ALOGI("CheckJNI enabled: not enabling JNI app bug workarounds.");
-        } else {
-            ALOGI("Enabling JNI app bug workarounds for target SDK version %i...",
-                  targetSdkVersion);
-            gDvmJni.workAroundAppJniBugs = true;
-        }
+        // TODO: running with CheckJNI should override this and force you to obey the strictest rules.
+        ALOGI("Turning on JNI app bug workarounds for target SDK version %i...", targetSdkVersion);
+        gDvmJni.workAroundAppJniBugs = true;
     }
     RETURN_VOID();
 }
@@ -220,6 +249,10 @@ const DalvikNativeMethod dvm_dalvik_system_VMRuntime[] = {
         Dalvik_dalvik_system_VMRuntime_getTargetHeapUtilization },
     { "nativeSetTargetHeapUtilization", "(F)V",
         Dalvik_dalvik_system_VMRuntime_nativeSetTargetHeapUtilization },
+    { "nativeSetTargetHeapMinFree", "(I)I",
+        Dalvik_dalvik_system_VMRuntime_nativeSetTargetHeapMinFree },
+    { "nativeSetTargetHeapConcurrentStart", "(I)I",
+        Dalvik_dalvik_system_VMRuntime_nativeSetTargetHeapConcurrentStart },
     { "newNonMovableArray", "(Ljava/lang/Class;I)Ljava/lang/Object;",
         Dalvik_dalvik_system_VMRuntime_newNonMovableArray },
     { "properties", "()[Ljava/lang/String;",

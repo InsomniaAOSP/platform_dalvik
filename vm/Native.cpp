@@ -411,14 +411,14 @@ bool dvmLoadNativeCode(const char* pathName, Object* classLoader,
         if (verbose)
             ALOGD("Added shared lib %s %p", pathName, classLoader);
 
-        bool result = false;
+        bool result = true;
         void* vonLoad;
         int version;
 
         vonLoad = dlsym(handle, "JNI_OnLoad");
         if (vonLoad == NULL) {
-            ALOGD("No JNI_OnLoad found in %s %p, skipping init", pathName, classLoader);
-            result = true;
+            ALOGD("No JNI_OnLoad found in %s %p, skipping init",
+                pathName, classLoader);
         } else {
             /*
              * Call JNI_OnLoad.  We have to override the current class
@@ -438,12 +438,11 @@ bool dvmLoadNativeCode(const char* pathName, Object* classLoader,
             dvmChangeStatus(self, oldStatus);
             self->classLoaderOverride = prevOverride;
 
-            if (version == JNI_ERR) {
-                *detail = strdup(StringPrintf("JNI_ERR returned from JNI_OnLoad in \"%s\"",
-                                              pathName).c_str());
-            } else if (dvmIsBadJniVersion(version)) {
-                *detail = strdup(StringPrintf("Bad JNI version returned from JNI_OnLoad in \"%s\": %d",
-                                              pathName, version).c_str());
+            if (version != JNI_VERSION_1_2 && version != JNI_VERSION_1_4 &&
+                version != JNI_VERSION_1_6)
+            {
+                ALOGW("JNI_OnLoad returned bad version (%d) in %s %p",
+                    version, pathName, classLoader);
                 /*
                  * It's unwise to call dlclose() here, but we can mark it
                  * as bad and ensure that future load attempts will fail.
@@ -453,12 +452,11 @@ bool dvmLoadNativeCode(const char* pathName, Object* classLoader,
                  * newly-registered native method calls.  We could try to
                  * unregister them, but that doesn't seem worthwhile.
                  */
+                result = false;
             } else {
-                result = true;
-            }
-            if (gDvm.verboseJni) {
-                ALOGI("[Returned %s from JNI_OnLoad for \"%s\"]",
-                      (result ? "successfully" : "failure"), pathName);
+                if (gDvm.verboseJni) {
+                    ALOGI("[Returned from JNI_OnLoad for \"%s\"]", pathName);
+                }
             }
         }
 

@@ -24,14 +24,9 @@
 #
 # Compiler defines.
 #
-
-LOCAL_CFLAGS += -fstrict-aliasing -Wstrict-aliasing=2
-LOCAL_CFLAGS += -Wall -Wextra -Wno-unused-parameter -Wno-unused-but-set-variable
+LOCAL_CFLAGS += -fstrict-aliasing -Wstrict-aliasing=2 -fno-align-jumps
+LOCAL_CFLAGS += -Wall -Wextra -Wno-unused-parameter
 LOCAL_CFLAGS += -DARCH_VARIANT=\"$(dvm_arch_variant)\"
-
-ifneq ($(strip $(LOCAL_CLANG)),true)
-LOCAL_CFLAGS += -fno-align-jumps
-endif
 
 #
 # Optional features.  These may impact the size or performance of the VM.
@@ -227,6 +222,7 @@ ifeq ($(WITH_JIT),true)
 endif
 
 LOCAL_C_INCLUDES += \
+	$(JNI_H_INCLUDE) \
 	dalvik \
 	dalvik/vm \
 	external/zlib \
@@ -283,10 +279,6 @@ ifeq ($(dvm_arch),mips)
 		compiler/codegen/mips/LocalOptimizations.cpp \
 		compiler/codegen/mips/GlobalOptimizations.cpp \
 		compiler/template/out/CompilerTemplateAsm-$(dvm_arch_variant).S
-  endif
-
-  ifeq ($(strip $(ARCH_HAVE_ALIGNED_DOUBLES)),true)
-    LOCAL_CFLAGS += -DARCH_HAVE_ALIGNED_DOUBLES
   endif
 endif
 

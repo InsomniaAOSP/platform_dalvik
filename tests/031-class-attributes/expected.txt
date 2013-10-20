@@ -1,15 +1,3 @@
-public abstract final int
-public abstract final [I
-public java.lang.Object
-public abstract final [Ljava.lang.Object;
-public ClassAttrs$PublicInnerClass
-public abstract final [LClassAttrs$PublicInnerClass;
-protected ClassAttrs$ProtectedInnerClass
-protected abstract final [LClassAttrs$ProtectedInnerClass;
-private ClassAttrs$PrivateInnerClass
-private abstract final [LClassAttrs$PrivateInnerClass;
- ClassAttrs$PackagePrivateInnerClass
-abstract final [LClassAttrs$PackagePrivateInnerClass;
 ***** class ClassAttrs:
   name: ClassAttrs
   canonical: ClassAttrs
@@ -23,8 +11,8 @@ abstract final [LClassAttrs$PackagePrivateInnerClass;
   enclosingMeth: null
   modifiers: 1
   package: null
-  declaredClasses: [6] class ClassAttrs$PublicMemberClass, class ClassAttrs$MemberClass, class ClassAttrs$PackagePrivateInnerClass, class ClassAttrs$PrivateInnerClass, class ClassAttrs$ProtectedInnerClass, class ClassAttrs$PublicInnerClass
-  member classes: [3] class ClassAttrs$PublicMemberClass, class ClassAttrs$ProtectedInnerClass, class ClassAttrs$PublicInnerClass
+  declaredClasses: [2] class ClassAttrs$PublicMemberClass, class ClassAttrs$MemberClass
+  member classes: [1] class ClassAttrs$PublicMemberClass
   isAnnotation: false
   isAnonymous: false
   isArray: false

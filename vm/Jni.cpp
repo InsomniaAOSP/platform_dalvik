@@ -22,6 +22,7 @@
 #include "Misc.h"
 #include "ScopedPthreadMutexLock.h"
 #include "UniquePtr.h"
+#include "hprof/Hprof.h"
 
 #include <stdlib.h>
 #include <stdarg.h>
@@ -248,6 +249,8 @@ private:
 
 #define kGlobalRefsTableInitialSize 512
 #define kGlobalRefsTableMaxSize     51200       /* arbitrary, must be < 64K */
+#define kGrefWaterInterval          100
+#define kTrackGrefUsage             true
 
 #define kWeakGlobalRefsTableInitialSize 16
 
@@ -269,6 +272,8 @@ bool dvmJniStartup() {
 
     dvmInitMutex(&gDvm.jniGlobalRefLock);
     dvmInitMutex(&gDvm.jniWeakGlobalRefLock);
+    gDvm.jniGlobalRefLoMark = 0;
+    gDvm.jniGlobalRefHiMark = kGrefWaterInterval * 2;
 
     if (!dvmInitReferenceTable(&gDvm.jniPinRefTable, kPinTableInitialSize, kPinTableMaxSize)) {
         return false;
@@ -283,11 +288,6 @@ void dvmJniShutdown() {
     gDvm.jniGlobalRefTable.destroy();
     gDvm.jniWeakGlobalRefTable.destroy();
     dvmClearReferenceTable(&gDvm.jniPinRefTable);
-}
-
-bool dvmIsBadJniVersion(int version) {
-  // We don't support JNI_VERSION_1_1. These are the only other valid versions.
-  return version != JNI_VERSION_1_2 && version != JNI_VERSION_1_4 && version != JNI_VERSION_1_6;
 }
 
 /*
@@ -500,6 +500,55 @@ static jobject addGlobalReference(Object* obj) {
         dvmGetCurrentJNIMethod()->clazz->descriptor,
         dvmGetCurrentJNIMethod()->name);
 
+    /* GREF usage tracking; should probably be disabled for production env */
+    if (kTrackGrefUsage && gDvm.jniGrefLimit != 0) {
+        int count = gDvm.jniGlobalRefTable.capacity();
+        // TODO: adjust for "holes"
+        if (count > gDvm.jniGlobalRefHiMark) {
+            ALOGE("GREF has increased to %d, max is %d and min is %d\n", count, gDvm.jniGlobalRefHiMark, gDvm.jniGlobalRefLoMark);
+            gDvm.jniGlobalRefHiMark += kGrefWaterInterval;
+            gDvm.jniGlobalRefLoMark += kGrefWaterInterval;
+
+            if(count == 1701) {
+              dvmUnlockMutex(&gDvm.jniGlobalRefLock);
+              /* hprofDumpHeap creates the file in read-ony mode. So, next time
+                 when hprofDumpHeap is trying to update the same file it will not
+                 be able to open the file in WRITE mode. */
+              remove ("/data/hprof_dump_1701.hprof");
+              hprofDumpHeap("/data/hprof_dump_1701.hprof", -1, false);
+              dvmLockMutex(&gDvm.jniGlobalRefLock);
+            }
+            if(count == 1801) {
+              dvmUnlockMutex(&gDvm.jniGlobalRefLock);
+              remove ("/data/hprof_dump_1801.hprof");
+              hprofDumpHeap("/data/hprof_dump_1801.hprof", -1, false);
+              dvmLockMutex(&gDvm.jniGlobalRefLock);
+            }
+            if(count == 1901) {
+              dvmUnlockMutex(&gDvm.jniGlobalRefLock);
+              remove ("/data/hprof_dump_1901.hprof");
+              hprofDumpHeap("/data/hprof_dump_1901.hprof", -1, false);
+              dvmLockMutex(&gDvm.jniGlobalRefLock);
+            }
+
+            /* watch for "excessive" use; not generally appropriate */
+            if (count >= gDvm.jniGrefLimit) {
+
+                dvmUnlockMutex(&gDvm.jniGlobalRefLock);
+                remove ("/data/hprof_dump_final.hprof");
+                hprofDumpHeap("/data/hprof_dump_final.hprof", -1, false);
+                dvmLockMutex(&gDvm.jniGlobalRefLock);
+
+                if (gDvmJni.warnOnly) {
+                    ALOGW("Excessive JNI global references (%d)", count);
+                } else {
+                    gDvm.jniGlobalRefTable.dump("JNI global");
+                    ALOGE("Excessive JNI global references (%d)", count);
+                    ReportJniError();
+                }
+            }
+        }
+    }
     return jobj;
 }
 
@@ -548,6 +597,16 @@ static void deleteGlobalReference(jobject jobj) {
         ALOGW("JNI: DeleteGlobalRef(%p) failed to find entry", jobj);
         return;
     }
+
+    if (kTrackGrefUsage && gDvm.jniGrefLimit != 0) {
+        int count = gDvm.jniGlobalRefTable.capacity();
+        // TODO: not quite right, need to subtract holes
+        if (count < gDvm.jniGlobalRefLoMark) {
+            ALOGD("GREF has decreased to %d", count);
+            gDvm.jniGlobalRefHiMark -= kGrefWaterInterval;
+            gDvm.jniGlobalRefLoMark -= kGrefWaterInterval;
+        }
+    }
 }
 
 /*
@@ -571,23 +630,26 @@ static void pinPrimitiveArray(ArrayObject* arrayObj) {
     }
 
     /*
+     * If we're watching global ref usage, also keep an eye on these.
+     *
      * The total number of pinned primitive arrays should be pretty small.
      * A single array should not be pinned more than once or twice; any
      * more than that is a strong indicator that a Release function is
      * not being called.
      */
-    int count = 0;
-    Object** ppObj = gDvm.jniPinRefTable.table;
-    while (ppObj < gDvm.jniPinRefTable.nextEntry) {
-        if (*ppObj++ == (Object*) arrayObj) {
-            count++;
+    if (kTrackGrefUsage && gDvm.jniGrefLimit != 0) {
+        int count = 0;
+        Object** ppObj = gDvm.jniPinRefTable.table;
+        while (ppObj < gDvm.jniPinRefTable.nextEntry) {
+            if (*ppObj++ == (Object*) arrayObj)
+                count++;
         }
-    }
 
-    if (count > kPinComplainThreshold) {
-        ALOGW("JNI: pin count on array %p (%s) is now %d",
-              arrayObj, arrayObj->clazz->descriptor, count);
-        /* keep going */
+        if (count > kPinComplainThreshold) {
+            ALOGW("JNI: pin count on array %p (%s) is now %d",
+                arrayObj, arrayObj->clazz->descriptor, count);
+            /* keep going */
+        }
     }
 }
 
@@ -698,11 +760,6 @@ static void dumpCandidateMethods(ClassObject* clazz, const char* methodName, con
     dumpMethods(clazz->directMethods, clazz->directMethodCount, methodName);
 }
 
-static void throwNoSuchMethodError(ClassObject* c, const char* name, const char* sig, const char* kind) {
-    std::string msg(StringPrintf("no %s method \"%s.%s%s\"", kind, c->descriptor, name, sig));
-    dvmThrowNoSuchMethodError(msg.c_str());
-}
-
 /*
  * Register a method that uses JNI calling conventions.
  */
@@ -728,13 +785,11 @@ static bool dvmRegisterJNIMethod(ClassObject* clazz, const char* methodName,
     }
     if (method == NULL) {
         dumpCandidateMethods(clazz, methodName, signature);
-        throwNoSuchMethodError(clazz, methodName, signature, "static or non-static");
         return false;
     }
 
     if (!dvmIsNativeMethod(method)) {
         ALOGW("Unable to register: not native: %s.%s:%s", clazz->descriptor, methodName, signature);
-        throwNoSuchMethodError(clazz, methodName, signature, "native");
         return false;
     }
 
@@ -2819,13 +2874,6 @@ static jint attachThread(JavaVM* vm, JNIEnv** p_env, void* thr_args, bool isDaem
         argsCopy.name = NULL;
         argsCopy.group = (jobject) dvmGetMainThreadGroup();
     } else {
-        if (dvmIsBadJniVersion(args->version)) {
-            ALOGE("Bad JNI version passed to %s: %d",
-                  (isDaemon ? "AttachCurrentThreadAsDaemon" : "AttachCurrentThread"),
-                  args->version);
-            return JNI_EVERSION;
-        }
-
         argsCopy.version = args->version;
         argsCopy.name = args->name;
         if (args->group != NULL) {
@@ -2904,10 +2952,7 @@ static jint DetachCurrentThread(JavaVM* vm) {
 static jint GetEnv(JavaVM* vm, void** env, jint version) {
     Thread* self = dvmThreadSelf();
 
-    // GetEnv also accepts JNI_VERSION_1_1, but always returns a JNIEnv*
-    // corresponding to the most current supported JNI version.
-    if (dvmIsBadJniVersion(version) && version != JNI_VERSION_1_1) {
-        ALOGE("Bad JNI version passed to GetEnv: %d", version);
+    if (version < JNI_VERSION_1_1 || version > JNI_VERSION_1_6) {
         return JNI_EVERSION;
     }
 
@@ -3423,8 +3468,7 @@ jint JNI_GetCreatedJavaVMs(JavaVM** vmBuf, jsize bufLen, jsize* nVMs) {
  */
 jint JNI_CreateJavaVM(JavaVM** p_vm, JNIEnv** p_env, void* vm_args) {
     const JavaVMInitArgs* args = (JavaVMInitArgs*) vm_args;
-    if (dvmIsBadJniVersion(args->version)) {
-        ALOGE("Bad JNI version passed to CreateJavaVM: %d", args->version);
+    if (args->version < JNI_VERSION_1_2) {
         return JNI_EVERSION;
     }
 
@@ -3487,8 +3531,6 @@ jint JNI_CreateJavaVM(JavaVM** p_vm, JNIEnv** p_env, void* vm_args) {
                 } else {
                     dvmFprintf(stderr, "ERROR: CreateJavaVM failed: unknown -Xjniopts option '%s'\n",
                             jniOpt);
-                    free(pVM);
-                    free(jniOpts);
                     return JNI_ERR;
                 }
                 jniOpt += strlen(jniOpt) + 1;
@@ -3506,7 +3548,6 @@ jint JNI_CreateJavaVM(JavaVM** p_vm, JNIEnv** p_env, void* vm_args) {
 
     if (gDvmJni.jniVm != NULL) {
         dvmFprintf(stderr, "ERROR: Dalvik only supports one VM per process\n");
-        free(pVM);
         return JNI_ERR;
     }
     gDvmJni.jniVm = (JavaVM*) pVM;

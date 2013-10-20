@@ -134,7 +134,7 @@
     .word   dvmSelfVerificationMemOpDecode
 #endif
 
-    .global dvmCompilerTemplateEnd
-dvmCompilerTemplateEnd:
+    .global dmvCompilerTemplateEnd
+dmvCompilerTemplateEnd:
 
 #endif /* WITH_JIT */

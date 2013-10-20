@@ -22,26 +22,28 @@ REM Set up prog to be the path of this script, including following symlinks,
 REM and set up progdir to be the fully-qualified pathname of its directory.
 set prog=%~f0
 
+REM Change current directory to where dx is, to avoid issues with directories
+REM containing whitespaces.
+cd /d %~dp0
+
 rem Check we have a valid Java.exe in the path.
 set java_exe=
-if exist    "%~dp0..\tools\lib\find_java.bat" call    "%~dp0..\tools\lib\find_java.bat"
-if exist "%~dp0..\..\tools\lib\find_java.bat" call "%~dp0..\..\tools\lib\find_java.bat"
+if exist    ..\tools\lib\find_java.bat call    ..\tools\lib\find_java.bat
+if exist ..\..\tools\lib\find_java.bat call ..\..\tools\lib\find_java.bat
 if not defined java_exe goto :EOF
 
 set jarfile=dx.jar
-set "frameworkdir=%~dp0"
-rem frameworkdir must not end with a dir sep.
-set "frameworkdir=%frameworkdir:~0,-1%"
+set frameworkdir=
 
-if exist "%frameworkdir%\%jarfile%" goto JarFileOk
-    set "frameworkdir=%~dp0lib"
+if exist %frameworkdir%%jarfile% goto JarFileOk
+    set frameworkdir=lib\
 
-if exist "%frameworkdir%\%jarfile%" goto JarFileOk
-    set "frameworkdir=%~dp0..\framework"
+if exist %frameworkdir%%jarfile% goto JarFileOk
+    set frameworkdir=..\framework\
 
 :JarFileOk
 
-set "jarpath=%frameworkdir%\%jarfile%"
+set jarpath=%frameworkdir%%jarfile%
 
 set javaOpts=
 set args=
@@ -84,5 +86,5 @@ set a=%~1
 :endArgs
 
 set javaOpts=%javaOpts% %defaultXmx% %defaultXss%
-call "%java_exe%" %javaOpts% -Djava.ext.dirs="%frameworkdir%" -jar "%jarpath%" %params%
 
+call %java_exe% %javaOpts% -Djava.ext.dirs=%frameworkdir% -jar %jarpath% %params%

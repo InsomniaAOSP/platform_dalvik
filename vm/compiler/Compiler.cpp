@@ -27,7 +27,7 @@
 #endif
 
 extern "C" void dvmCompilerTemplateStart(void);
-extern "C" void dvmCompilerTemplateEnd(void);
+extern "C" void dmvCompilerTemplateEnd(void);
 
 static inline bool workQueueLength(void)
 {
@@ -193,7 +193,7 @@ bool dvmCompilerSetupCodeCache(void)
 
 #ifndef ARCH_IA32
     /* Copy the template code into the beginning of the code cache */
-    int templateSize = (intptr_t) dvmCompilerTemplateEnd -
+    int templateSize = (intptr_t) dmvCompilerTemplateEnd -
                        (intptr_t) dvmCompilerTemplateStart;
     memcpy((void *) gDvmJit.codeCache,
            (void *) dvmCompilerTemplateStart,
@@ -213,6 +213,14 @@ bool dvmCompilerSetupCodeCache(void)
     /* Only flush the part in the code cache that is being used now */
     dvmCompilerCacheFlush((intptr_t) gDvmJit.codeCache,
                           (intptr_t) gDvmJit.codeCache + templateSize, 0);
+
+    int result = mprotect(gDvmJit.codeCache, gDvmJit.codeCacheSize,
+                          PROTECT_CODE_CACHE_ATTRS);
+
+    if (result == -1) {
+        ALOGE("Failed to remove the write permission for the code cache");
+        dvmAbort();
+    }
 #else
     gDvmJit.codeCacheByteUsed = 0;
     stream = (char*)gDvmJit.codeCache + gDvmJit.codeCacheByteUsed;
@@ -223,14 +231,6 @@ bool dvmCompilerSetupCodeCache(void)
     gDvmJit.codeCacheByteUsed = (stream - streamStart);
     ALOGV("stream = %p after initJIT", stream);
 #endif
-
-    int result = mprotect(gDvmJit.codeCache, gDvmJit.codeCacheSize,
-                          PROTECT_CODE_CACHE_ATTRS);
-
-    if (result == -1) {
-        ALOGE("Failed to remove the write permission for the code cache");
-        dvmAbort();
-    }
 
     return true;
 }

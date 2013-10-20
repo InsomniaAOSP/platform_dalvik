@@ -124,6 +124,7 @@ struct DvmGlobals {
     void        (*abortHook)(void);
     bool        (*isSensitiveThreadHook)(void);
 
+    int         jniGrefLimit;       // 0 means no limit
     char*       jniTrace;
     bool        reduceSignals;
     bool        noQuitHandler;
@@ -268,9 +269,9 @@ struct DvmGlobals {
     ClassObject* classJavaLangReflectMethodArray;
     ClassObject* classJavaLangReflectProxy;
     ClassObject* classJavaNioDirectByteBuffer;
-    ClassObject* classLibcoreReflectAnnotationFactory;
-    ClassObject* classLibcoreReflectAnnotationMember;
-    ClassObject* classLibcoreReflectAnnotationMemberArray;
+    ClassObject* classOrgApacheHarmonyLangAnnotationAnnotationFactory;
+    ClassObject* classOrgApacheHarmonyLangAnnotationAnnotationMember;
+    ClassObject* classOrgApacheHarmonyLangAnnotationAnnotationMemberArray;
     ClassObject* classOrgApacheHarmonyDalvikDdmcChunk;
     ClassObject* classOrgApacheHarmonyDalvikDdmcDdmServer;
     ClassObject* classJavaLangRefFinalizerReference;
@@ -524,6 +525,8 @@ struct DvmGlobals {
     IndirectRefTable jniWeakGlobalRefTable;
     pthread_mutex_t jniGlobalRefLock;
     pthread_mutex_t jniWeakGlobalRefLock;
+    int         jniGlobalRefHiMark;
+    int         jniGlobalRefLoMark;
 
     /*
      * JNI pinned object table (used for primitive arrays).
@@ -646,7 +649,6 @@ struct DvmGlobals {
     AllocRecord*    allocRecords;
     int             allocRecordHead;        /* most-recently-added entry */
     int             allocRecordCount;       /* #of valid entries */
-    int             allocRecordMax;         /* Number of allocated entries. */
 
     /*
      * When a profiler is enabled, this is incremented.  Distinct profilers

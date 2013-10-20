@@ -558,9 +558,8 @@ static void scanGrayObjects(GcMarkContext *ctx)
     const u1 *base, *limit, *ptr, *dirty;
 
     base = &h->cardTableBase[0];
-    // The limit is the card one after the last accessible card.
-    limit = dvmCardFromAddr((u1 *)dvmHeapSourceGetLimit() - GC_CARD_SIZE) + 1;
-    assert(limit <= &base[h->cardTableOffset + h->cardTableLength]);
+    limit = dvmCardFromAddr((u1 *)dvmHeapSourceGetLimit());
+    assert(limit <= &h->cardTableBase[h->cardTableLength]);
 
     ptr = base;
     for (;;) {

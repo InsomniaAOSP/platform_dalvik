@@ -118,12 +118,11 @@ static inline u8 getWallTimeInUsec()
  * We use this clock when we can because it enables us to track the time that
  * a thread spends running and not blocked.
  */
-static inline u8 getThreadCpuTimeInUsec(Thread* thread)
+static inline u8 getThreadCpuTimeInUsec()
 {
-    clockid_t cid;
     struct timespec tm;
-    pthread_getcpuclockid(thread->handle, &cid);
-    clock_gettime(cid, &tm);
+
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &tm);
     if (!(tm.tv_nsec >= 0 && tm.tv_nsec < 1*1000*1000*1000)) {
         ALOGE("bad nsec: %ld", tm.tv_nsec);
         dvmAbort();
@@ -138,7 +137,7 @@ static inline u8 getThreadCpuTimeInUsec(Thread* thread)
 static inline u8 getStopwatchClock()
 {
 #if defined(HAVE_POSIX_CLOCKS)
-    return getThreadCpuTimeInUsec(dvmThreadSelf());
+    return getThreadCpuTimeInUsec();
 #else
     return getWallTimeInUsec();
 #endif
@@ -169,133 +168,6 @@ static inline void storeLongLE(u1* buf, u8 val)
     *buf++ = (u1) (val >> 40);
     *buf++ = (u1) (val >> 48);
     *buf++ = (u1) (val >> 56);
-}
-
-/*
- * Gets a thread's stack trace as an array of method pointers of length pCount.
- * The returned array must be freed by the caller.
- */
-static const Method** getStackTrace(Thread* thread, size_t* pCount)
-{
-    void* fp = thread->interpSave.curFrame;
-    assert(thread == dvmThreadSelf() || dvmIsSuspended(thread));
-
-    /* Compute the stack depth. */
-    size_t stackDepth = 0;
-    while (fp != NULL) {
-        const StackSaveArea* saveArea = SAVEAREA_FROM_FP(fp);
-
-        if (!dvmIsBreakFrame((u4*) fp))
-            stackDepth++;
-
-        assert(fp != saveArea->prevFrame);
-        fp = saveArea->prevFrame;
-    }
-    *pCount = stackDepth;
-
-    /*
-     * Allocate memory for stack trace. This must be freed later, either by
-     * freeThreadStackTraceSamples when tracing stops or by freeThread.
-     */
-    const Method** stackTrace = (const Method**) malloc(sizeof(Method*) *
-                                                        stackDepth);
-    if (stackTrace == NULL)
-        return NULL;
-
-    /* Walk the stack a second time, filling in the stack trace. */
-    const Method** ptr = stackTrace;
-    fp = thread->interpSave.curFrame;
-    while (fp != NULL) {
-        const StackSaveArea* saveArea = SAVEAREA_FROM_FP(fp);
-        const Method* method = saveArea->method;
-
-        if (!dvmIsBreakFrame((u4*) fp)) {
-            *ptr++ = method;
-            stackDepth--;
-        }
-        assert(fp != saveArea->prevFrame);
-        fp = saveArea->prevFrame;
-    }
-    assert(stackDepth == 0);
-
-    return stackTrace;
-}
-/*
- * Get a sample of the stack trace for a thread.
- */
-static void getSample(Thread* thread)
-{
-    /* Get old and new stack trace for thread. */
-    size_t newLength = 0;
-    const Method** newStackTrace = getStackTrace(thread, &newLength);
-    size_t oldLength = thread->stackTraceSampleLength;
-    const Method** oldStackTrace = thread->stackTraceSample;
-
-    /* Read time clocks to use for all events in this trace. */
-    u4 cpuClockDiff = 0;
-    u4 wallClockDiff = 0;
-    dvmMethodTraceReadClocks(thread, &cpuClockDiff, &wallClockDiff);
-    if (oldStackTrace == NULL) {
-        /*
-         * If there's no previous stack trace sample, log an entry event for
-         * every method in the trace.
-         */
-        for (int i = newLength - 1; i >= 0; --i) {
-            dvmMethodTraceAdd(thread, newStackTrace[i], METHOD_TRACE_ENTER,
-                              cpuClockDiff, wallClockDiff);
-        }
-    } else {
-        /*
-         * If there's a previous stack trace, diff the traces and emit entry
-         * and exit events accordingly.
-         */
-        int diffIndexOld = oldLength - 1;
-        int diffIndexNew = newLength - 1;
-        /* Iterate bottom-up until there's a difference between traces. */
-        while (diffIndexOld >= 0 && diffIndexNew >= 0 &&
-               oldStackTrace[diffIndexOld] == newStackTrace[diffIndexNew]) {
-            diffIndexOld--;
-            diffIndexNew--;
-        }
-        /* Iterate top-down over old trace until diff, emitting exit events. */
-        for (int i = 0; i <= diffIndexOld; ++i) {
-            dvmMethodTraceAdd(thread, oldStackTrace[i], METHOD_TRACE_EXIT,
-                              cpuClockDiff, wallClockDiff);
-        }
-        /* Iterate bottom-up over new trace from diff, emitting entry events. */
-        for (int i = diffIndexNew; i >= 0; --i) {
-            dvmMethodTraceAdd(thread, newStackTrace[i], METHOD_TRACE_ENTER,
-                              cpuClockDiff, wallClockDiff);
-        }
-    }
-
-    /* Free the old stack trace and update the thread's stack trace sample. */
-    free(oldStackTrace);
-    thread->stackTraceSample = newStackTrace;
-    thread->stackTraceSampleLength = newLength;
-}
-
-/*
- * Entry point for sampling thread. The sampling interval in microseconds is
- * passed in as an argument.
- */
-static void* runSamplingThread(void* arg)
-{
-    int intervalUs = (int) arg;
-    while (gDvm.methodTrace.traceEnabled) {
-        dvmSuspendAllThreads(SUSPEND_FOR_SAMPLING);
-
-        dvmLockThreadList(dvmThreadSelf());
-        for (Thread *thread = gDvm.threadList; thread != NULL; thread = thread->next) {
-            getSample(thread);
-        }
-        dvmUnlockThreadList();
-
-        dvmResumeAllThreads(SUSPEND_FOR_SAMPLING);
-
-        usleep(intervalUs);
-    }
-    return NULL;
 }
 
 /*
@@ -410,21 +282,6 @@ static void resetCpuClockBase()
 }
 
 /*
- * Free and reset the "stackTraceSample" field in all threads.
- */
-static void freeThreadStackTraceSamples()
-{
-    Thread* thread;
-
-    dvmLockThreadList(NULL);
-    for (thread = gDvm.threadList; thread != NULL; thread = thread->next) {
-        free(thread->stackTraceSample);
-        thread->stackTraceSample = NULL;
-    }
-    dvmUnlockThreadList();
-}
-
-/*
  * Dump the thread list to the specified file.
  */
 static void dumpThreadList(FILE* fp) {
@@ -502,7 +359,7 @@ static void dumpMethodList(FILE* fp)
  * On failure, we throw an exception and return.
  */
 void dvmMethodTraceStart(const char* traceFileName, int traceFd, int bufferSize,
-    int flags, bool directToDdms, bool samplingEnabled, int intervalUs)
+    int flags, bool directToDdms)
 {
     MethodTraceState* state = &gDvm.methodTrace;
 
@@ -571,8 +428,6 @@ void dvmMethodTraceStart(const char* traceFileName, int traceFd, int bufferSize,
         state->recordSize = TRACE_REC_SIZE_SINGLE_CLOCK;
     }
 
-    state->samplingEnabled = samplingEnabled;
-
     /*
      * Output the header.
      */
@@ -597,17 +452,7 @@ void dvmMethodTraceStart(const char* traceFileName, int traceFd, int bufferSize,
      * following to take a Thread* argument, and set the appropriate
      * interpBreak flags only on the target thread.
      */
-    if (samplingEnabled) {
-        updateActiveProfilers(kSubModeSampleTrace, true);
-        /* Start the sampling thread. */
-        if (!dvmCreateInternalThread(&state->samplingThreadHandle,
-                "Sampling Thread", &runSamplingThread, (void*) intervalUs)) {
-            dvmThrowInternalError("failed to create sampling thread");
-            goto fail;
-        }
-    } else {
-        updateActiveProfilers(kSubModeMethodTrace, true);
-    }
+    updateActiveProfilers(kSubModeMethodTrace, true);
 
     dvmUnlockMutex(&state->startStopLock);
     return;
@@ -655,7 +500,7 @@ static inline void measureClockOverhead()
 {
 #if defined(HAVE_POSIX_CLOCKS)
     if (useThreadCpuClock()) {
-        getThreadCpuTimeInUsec(dvmThreadSelf());
+        getThreadCpuTimeInUsec();
     }
 #endif
     if (useWallClock()) {
@@ -691,18 +536,12 @@ static u4 getClockOverhead()
 }
 
 /*
- * Indicates if method tracing is active and what kind of tracing is active.
+ * Returns "true" if method tracing is currently active.
  */
-TracingMode dvmGetMethodTracingMode()
+bool dvmIsMethodTraceActive()
 {
     const MethodTraceState* state = &gDvm.methodTrace;
-    if (!state->traceEnabled) {
-        return TRACING_INACTIVE;
-    } else if (state->samplingEnabled) {
-        return SAMPLE_PROFILING_ACTIVE;
-    } else {
-        return METHOD_TRACING_ACTIVE;
-    }
+    return state->traceEnabled;
 }
 
 /*
@@ -712,7 +551,6 @@ TracingMode dvmGetMethodTracingMode()
 void dvmMethodTraceStop()
 {
     MethodTraceState* state = &gDvm.methodTrace;
-    bool samplingEnabled = state->samplingEnabled;
     u8 elapsed;
 
     /*
@@ -727,11 +565,7 @@ void dvmMethodTraceStop()
         dvmUnlockMutex(&state->startStopLock);
         return;
     } else {
-        if (samplingEnabled) {
-            updateActiveProfilers(kSubModeSampleTrace, false);
-        } else {
-            updateActiveProfilers(kSubModeMethodTrace, false);
-        }
+        updateActiveProfilers(kSubModeMethodTrace, false);
     }
 
     /* compute elapsed time */
@@ -885,42 +719,9 @@ void dvmMethodTraceStop()
     fclose(state->traceFile);
     state->traceFile = NULL;
 
-    /* free and clear sampling traces held by all threads */
-    if (samplingEnabled) {
-        freeThreadStackTraceSamples();
-    }
-
     /* wake any threads that were waiting for profiling to complete */
     dvmBroadcastCond(&state->threadExitCond);
     dvmUnlockMutex(&state->startStopLock);
-
-    /* make sure the sampling thread has stopped */
-    if (samplingEnabled &&
-        pthread_join(state->samplingThreadHandle, NULL) != 0) {
-        ALOGW("Sampling thread join failed");
-    }
-}
-
-/*
- * Read clocks and generate time diffs for method trace events.
- */
-void dvmMethodTraceReadClocks(Thread* self, u4* cpuClockDiff,
-                              u4* wallClockDiff)
-{
-#if defined(HAVE_POSIX_CLOCKS)
-    if (useThreadCpuClock()) {
-        if (!self->cpuClockBaseSet) {
-            /* Initialize per-thread CPU clock base time on first use. */
-            self->cpuClockBase = getThreadCpuTimeInUsec(self);
-            self->cpuClockBaseSet = true;
-        } else {
-            *cpuClockDiff = getThreadCpuTimeInUsec(self) - self->cpuClockBase;
-        }
-    }
-#endif
-    if (useWallClock()) {
-        *wallClockDiff = getWallTimeInUsec() - gDvm.methodTrace.startWhen;
-    }
 }
 
 /*
@@ -929,8 +730,7 @@ void dvmMethodTraceReadClocks(Thread* self, u4* cpuClockDiff,
  * Multiple threads may be banging on this all at once.  We use atomic ops
  * rather than mutexes for speed.
  */
-void dvmMethodTraceAdd(Thread* self, const Method* method, int action,
-                       u4 cpuClockDiff, u4 wallClockDiff)
+void dvmMethodTraceAdd(Thread* self, const Method* method, int action)
 {
     MethodTraceState* state = &gDvm.methodTrace;
     u4 methodVal;
@@ -938,6 +738,21 @@ void dvmMethodTraceAdd(Thread* self, const Method* method, int action,
     u1* ptr;
 
     assert(method != NULL);
+
+#if defined(HAVE_POSIX_CLOCKS)
+    /*
+     * We can only access the per-thread CPU clock from within the
+     * thread, so we have to initialize the base time on the first use.
+     * (Looks like pthread_getcpuclockid(thread, &id) will do what we
+     * want, but it doesn't appear to be defined on the device.)
+     */
+    if (!self->cpuClockBaseSet) {
+        self->cpuClockBase = getThreadCpuTimeInUsec();
+        self->cpuClockBaseSet = true;
+        //ALOGI("thread base id=%d 0x%llx",
+        //    self->threadId, self->cpuClockBase);
+    }
+#endif
 
     /*
      * Advance "curOffset" atomically.
@@ -969,6 +784,7 @@ void dvmMethodTraceAdd(Thread* self, const Method* method, int action,
 
 #if defined(HAVE_POSIX_CLOCKS)
     if (useThreadCpuClock()) {
+        u4 cpuClockDiff = (u4) (getThreadCpuTimeInUsec() - self->cpuClockBase);
         *ptr++ = (u1) cpuClockDiff;
         *ptr++ = (u1) (cpuClockDiff >> 8);
         *ptr++ = (u1) (cpuClockDiff >> 16);
@@ -977,6 +793,7 @@ void dvmMethodTraceAdd(Thread* self, const Method* method, int action,
 #endif
 
     if (useWallClock()) {
+        u4 wallClockDiff = (u4) (getWallTimeInUsec() - state->startWhen);
         *ptr++ = (u1) wallClockDiff;
         *ptr++ = (u1) (wallClockDiff >> 8);
         *ptr++ = (u1) (wallClockDiff >> 16);
@@ -992,11 +809,7 @@ void dvmMethodTraceAdd(Thread* self, const Method* method, int action,
 void dvmFastMethodTraceEnter(const Method* method, Thread* self)
 {
     if (self->interpBreak.ctl.subMode & kSubModeMethodTrace) {
-        u4 cpuClockDiff = 0;
-        u4 wallClockDiff = 0;
-        dvmMethodTraceReadClocks(self, &cpuClockDiff, &wallClockDiff);
-        dvmMethodTraceAdd(self, method, METHOD_TRACE_ENTER, cpuClockDiff,
-                          wallClockDiff);
+        dvmMethodTraceAdd(self, method, METHOD_TRACE_ENTER);
     }
 }
 
@@ -1008,11 +821,8 @@ void dvmFastMethodTraceEnter(const Method* method, Thread* self)
 void dvmFastMethodTraceExit(Thread* self)
 {
     if (self->interpBreak.ctl.subMode & kSubModeMethodTrace) {
-        u4 cpuClockDiff = 0;
-        u4 wallClockDiff = 0;
-        dvmMethodTraceReadClocks(self, &cpuClockDiff, &wallClockDiff);
         dvmMethodTraceAdd(self, self->interpSave.method,
-                          METHOD_TRACE_EXIT, cpuClockDiff, wallClockDiff);
+                          METHOD_TRACE_EXIT);
     }
 }
 
@@ -1024,11 +834,7 @@ void dvmFastMethodTraceExit(Thread* self)
 void dvmFastNativeMethodTraceExit(const Method* method, Thread* self)
 {
     if (self->interpBreak.ctl.subMode & kSubModeMethodTrace) {
-        u4 cpuClockDiff = 0;
-        u4 wallClockDiff = 0;
-        dvmMethodTraceReadClocks(self, &cpuClockDiff, &wallClockDiff);
-        dvmMethodTraceAdd(self, method, METHOD_TRACE_EXIT, cpuClockDiff,
-                          wallClockDiff);
+        dvmMethodTraceAdd(self, method, METHOD_TRACE_EXIT);
     }
 }
 
